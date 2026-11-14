@@ -1,0 +1,33 @@
+name: Contextual template sync
+description: Open a pull request that merges a template repository's new commits into a repository created from it.
+author: Contextual
+
+inputs:
+  template-repository:
+    description: The template repository, as owner/name.
+    required: true
+  template-branch:
+    description: The template branch to sync from.
+    default: main
+  token:
+    description: The token that checks out the repository, pushes the sync branch and opens the pull request.
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ github.event.repository.default_branch }}
+        fetch-depth: 0
+        token: ${{ inputs.token }}
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 24
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        TEMPLATE_REPOSITORY: ${{ inputs.template-repository }}
+        TEMPLATE_BRANCH: ${{ inputs.template-branch }}
+      run: '"$GITHUB_ACTION_PATH/template-sync.sh"'

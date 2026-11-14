@@ -1,0 +1,54 @@
+# Contextual template sync
+
+Keeps a repository created from a template up to date. Each run merges the template's new commits into a branch and opens a pull request for you to review, so the template's changes arrive the same way any other change does.
+
+## Usage
+
+```yaml
+on:
+  schedule:
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency: template-sync
+
+jobs:
+  template-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ContextualIO/template-sync-action@v1
+        with:
+          template-repository: my-org/my-template
+```
+
+The action checks out the repository's default branch itself, so the job needs no checkout step.
+
+The repository needs a `.template-sync-ref` file containing the template commit it was created from. Each merged sync updates it. Don't edit or delete it: without it there's nothing to merge against, so the sync stops with an error.
+
+## Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `template-repository` | | The template, as `owner/name`. |
+| `template-branch` | `main` | The template branch to sync from. |
+| `token` | `github.token` | The token that checks out the repository, pushes the sync branch and opens the pull request. |
+
+The default `github.token` works with three limits: the repository must allow GitHub Actions to create pull requests (Settings → Actions → General), the sync pull requests don't trigger other workflows, and a template change to `.github/workflows/` can't be pushed. A token with the Contents, Pull requests and Workflows permissions removes all three.
+
+## How a sync works
+
+- **It merges, it doesn't overwrite.** The sync is a three-way merge between the commit in `.template-sync-ref`, the template's branch and your repository, so your own edits to template files survive.
+- **Conflicts arrive as a draft pull request.** When you and the template changed the same lines, the conflict markers are committed on the sync branch, and the pull request lists each conflict with a prompt you can give an AI assistant to resolve them.
+- **One sync pull request at a time.** If the template moves again, the open pull request is updated in place. Once you have pushed commits to it, such as conflict resolutions, it's left alone until you merge it.
+- **`.templatesyncignore`** lists paths whose template changes you never want, one per line, matched like `.gitignore`.
+- **Custom merge drivers.** A `.gitattributes` entry `merge=<name>` uses `bin/merge/<name>.ts`, run with Node.js, to merge that file.
+- **Changesets.** In a repository with a `.changeset/` directory, a sync that changes anything adds a patch changeset, and changesets from the template itself are removed.
+- **Template notes.** New entries in the template's `TEMPLATE_CHANGELOG.md` are copied into the pull request description.
+
+## License
+
+[MIT](LICENSE)
