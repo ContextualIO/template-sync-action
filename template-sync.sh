@@ -92,7 +92,7 @@ $(sed 's/^/- /' <<< "${files}")
 In each conflict, the part after <<<<<<< is this repository's version and the part between ======= and >>>>>>> is the template's new version.
 
 1. Clone the repository if needed, then check out the branch: git fetch origin ${branch} && git switch ${branch}
-2. For each conflicted file, see what the template changed: git diff ${last_sync_commit:0:7} ${template_head_short} -- <file>
+2. Fetch the template (git fetch https://github.com/${TEMPLATE_REPOSITORY}.git ${TEMPLATE_BRANCH}), then for each conflicted file see what it changed: git diff ${last_sync_commit:0:7} ${template_head_short} -- <file>
 3. Resolve every conflict so the file keeps this repository's own changes and also applies the template's change. Only drop one side's change when the other side clearly replaces it, and tell me when you do.
 4. If package.json conflicts, keep this repository's own dependencies and scripts while taking the template's updates. Never hand-edit a lockfile: once package.json is resolved, regenerate it by installing dependencies.
 5. Read the new entries at the top of TEMPLATE_CHANGELOG.md, if it has them, and follow any instructions in them.
