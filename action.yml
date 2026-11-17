@@ -9,24 +9,33 @@ inputs:
   template-branch:
     description: The template branch to sync from.
     default: main
+  organization:
+    description: The Contextual organization whose GitHub connection covers this repository. The sync then uses a token from the organization's GitHub App instead of `token`.
+    default: ""
   token:
-    description: The token that checks out the repository, pushes the sync branch and opens the pull request.
+    description: The token that checks out the repository, pushes the sync branch and opens the pull request, when no organization is given.
     default: ${{ github.token }}
 
 runs:
   using: composite
   steps:
+    - id: exchange
+      if: inputs.organization != ''
+      shell: bash
+      env:
+        ORGANIZATION: ${{ inputs.organization }}
+      run: '"$GITHUB_ACTION_PATH/exchange.sh"'
     - uses: actions/checkout@v7
       with:
         ref: ${{ github.event.repository.default_branch }}
         fetch-depth: 0
-        token: ${{ inputs.token }}
+        token: ${{ steps.exchange.outputs.token || inputs.token }}
     - uses: actions/setup-node@v6
       with:
         node-version: 24
     - shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ steps.exchange.outputs.token || inputs.token }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         TEMPLATE_REPOSITORY: ${{ inputs.template-repository }}
         TEMPLATE_BRANCH: ${{ inputs.template-branch }}

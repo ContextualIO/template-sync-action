@@ -35,9 +35,12 @@ The repository needs a `.template-sync-ref` file containing the template commit 
 |---|---|---|
 | `template-repository` | | The template, as `owner/name`. |
 | `template-branch` | `main` | The template branch to sync from. |
-| `token` | `github.token` | The token that checks out the repository, pushes the sync branch and opens the pull request. |
+| `organization` | | The Contextual organization whose GitHub connection covers this repository. The sync then uses a token from the organization's GitHub App instead of `token`. |
+| `token` | `github.token` | The token that checks out the repository, pushes the sync branch and opens the pull request, when no `organization` is given. |
 
 The default `github.token` works with three limits: the repository must allow GitHub Actions to create pull requests (Settings → Actions → General), the sync pull requests don't trigger other workflows, and a template change to `.github/workflows/` can't be pushed. A token with the Contents, Pull requests and Workflows permissions removes all three.
+
+With `organization`, the job also needs `id-token: write`. The action exchanges the job's GitHub Actions OIDC token for a token from the Contextual GitHub App, limited to this repository and to those three permissions, so none of the limits apply. The repository must be covered by one of the organization's GitHub connections. Outside production, set `CONTEXTUAL_SILO` in the job's environment, or `CONTEXTUAL_CONNECTIONS_URL` to name the connections API directly.
 
 ## How a sync works
 
