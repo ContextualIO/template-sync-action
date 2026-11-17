@@ -92,7 +92,7 @@ $(sed 's/^/- /' <<< "${files}")
 In each conflict, the part after <<<<<<< is this repository's version and the part between ======= and >>>>>>> is the template's new version.
 
 1. Clone the repository if needed, then check out the branch: git fetch origin ${branch} && git switch ${branch}
-2. For each conflicted file, see what the template changed: git diff ${last_sync_commit:0:7} ${template_head_short} -- <file>
+2. Fetch the template (git fetch https://github.com/${TEMPLATE_REPOSITORY}.git ${TEMPLATE_BRANCH}), then for each conflicted file see what it changed: git diff ${last_sync_commit:0:7} ${template_head_short} -- <file>
 3. Resolve every conflict so the file keeps this repository's own changes and also applies the template's change. Only drop one side's change when the other side clearly replaces it, and tell me when you do.
 4. If package.json conflicts, keep this repository's own dependencies and scripts while taking the template's updates. Never hand-edit a lockfile: once package.json is resolved, regenerate it by installing dependencies.
 5. Read the new entries at the top of TEMPLATE_CHANGELOG.md, if it has them, and follow any instructions in them.
@@ -127,6 +127,8 @@ if [ -n "${pending_pr}" ] && git fetch --no-tags origin "${branch}" 2>/dev/null;
   fi
 fi
 
+default_head=$(git rev-parse HEAD)
+
 # Land all changes on the sync branch; never on the default branch.
 git switch -c "${branch}"
 
@@ -142,7 +144,6 @@ if ! git merge --no-edit -m "chore(template): sync ${TEMPLATE_NAME} template" "$
   draft_on_conflict=--draft # Conflicted branches land as draft PRs to ensure they're handled.
   git add -A
   git commit -m "chore(template): sync ${TEMPLATE_NAME} template (unresolved conflicts)"
-  conflict_note=$(conflict_report "$(git rev-parse HEAD)" "${conflicted_files}")
 fi
 
 # Changesets the merge brought in are the template's own and would block this repository's releases.
@@ -177,17 +178,21 @@ echo "${template_head}" > "${sync_ref_file}"
 git add "${sync_ref_file}"
 git commit -m "chore(template): record ${TEMPLATE_NAME} @ ${template_head_short} as synced"
 
+# Squash the sync into one commit on the default branch, so the template's history stays out of this repository.
+title="chore(template): sync ${TEMPLATE_NAME} @ ${template_head_short}"
+git reset --soft "${default_head}"
+git commit -m "${title}"
+
 # Open a PR with the sync results.
 body="Syncs \`${TEMPLATE_NAME}\` @ \`${template_head_short}\`."
-if [ -n "${conflict_note}" ]; then
-  body+=$'\n\n'"${conflict_note}"
+if [ -n "${conflicted_files}" ]; then
+  body+=$'\n\n'"$(conflict_report "$(git rev-parse HEAD)" "${conflicted_files}")"
 fi
 changelog_entries=$(template_changelog_entries "${last_sync_commit}" "${template_head}")
 if [ -n "${changelog_entries}" ]; then
   body+=$'\n\n'"What changed in the template, from \`TEMPLATE_CHANGELOG.md\`. Follow any instructions before merging."$'\n\n'"${changelog_entries}"
 fi
 
-title="chore(template): sync ${TEMPLATE_NAME} @ ${template_head_short}"
 git push --force -u origin "${branch}"
 if [ -z "${pending_pr}" ]; then
   gh pr create ${draft_on_conflict} --base "${DEFAULT_BRANCH}" --head "${branch}" --title "${title}" --body "${body}"
