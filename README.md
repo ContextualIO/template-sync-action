@@ -35,12 +35,13 @@ The repository needs a `.template-sync-ref` file containing the template commit 
 |---|---|---|
 | `template-repository` | | The template, as `owner/name`. |
 | `template-branch` | `main` | The template branch to sync from. |
-| `organization` | | The Contextual organization whose GitHub connection covers this repository. The sync then uses a token from the organization's GitHub App instead of `token`. |
+| `directory` | `.` | The folder holding this repository's copy of the template, relative to the repository root. |
+| `organization` | | The Contextual organization whose GitHub connection covers this repository. The sync then uses a token from the organization's GitHub App instead of `token`. Defaults to `CONTEXTUAL_ORGANIZATION` in a `contextual-deploy.env` committed in `directory`, the file [`deploy-workers-action`](https://github.com/ContextualIO/deploy-workers-action) reads. |
 | `token` | `github.token` | The token that checks out the repository, pushes the sync branch and opens the pull request, when no `organization` is given. |
 
 The default `github.token` works with three limits: the repository must allow GitHub Actions to create pull requests (Settings → Actions → General), the sync pull requests don't trigger other workflows, and a template change to `.github/workflows/` can't be pushed. A token with the Contents, Pull requests and Workflows permissions removes all three.
 
-With `organization`, the job also needs `id-token: write`. The action exchanges the job's GitHub Actions OIDC token for a token from the Contextual GitHub App, limited to this repository and to those three permissions, so none of the limits apply. The repository must be covered by one of the organization's GitHub connections. Outside production, set `CONTEXTUAL_SILO` in the job's environment, or `CONTEXTUAL_CONNECTIONS_URL` to name the connections API directly.
+With an organization, the job also needs `id-token: write`. The action exchanges the job's GitHub Actions OIDC token for a token from the Contextual GitHub App, limited to this repository and to those three permissions, so none of the limits apply. The repository must be covered by one of the organization's GitHub connections. Outside production, set `CONTEXTUAL_SILO` in the job's environment, or `CONTEXTUAL_CONNECTIONS_URL` to name the connections API directly.
 
 ## How a sync works
 
@@ -51,6 +52,34 @@ With `organization`, the job also needs `id-token: write`. The action exchanges 
 - **Custom merge drivers.** A `.gitattributes` entry `merge=<name>` uses `bin/merge/<name>.ts`, run with Node.js, to merge that file.
 - **Changesets.** In a repository with a `.changeset/` directory, a sync that changes anything adds a patch changeset, and changesets from the template itself are removed.
 - **Template notes.** New entries in the template's `TEMPLATE_CHANGELOG.md` are copied into the pull request description.
+
+## A template in a folder
+
+In a repository that holds several projects, such as a monorepo, set `directory` to the folder created from the template. The sync then merges the template's changes into that folder only:
+
+- `.template-sync-ref`, `.templatesyncignore`, `.gitattributes`, `bin/merge/` and `contextual-deploy.env` are read from the folder, and `.templatesyncignore` paths are relative to it.
+- The changeset goes in the repository's root `.changeset/`, for the package in the folder's `package.json`. Changesets from the template are removed from the folder.
+- The sync branch and pull request name the folder, so each folder gets its own sync pull request.
+
+Keep every template file in the folder, including ones that only matter at a repository root, such as `.github/`. A template change to a file the folder doesn't have conflicts.
+
+To sync several folders, run one job per folder:
+
+```yaml
+jobs:
+  template-sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: [sites/marketing, sites/docs]
+    concurrency: template-sync-${{ matrix.directory }}
+    steps:
+      - uses: ContextualIO/template-sync-action@v1
+        with:
+          template-repository: my-org/my-template
+          directory: ${{ matrix.directory }}
+```
 
 ## License
 

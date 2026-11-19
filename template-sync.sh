@@ -2,8 +2,28 @@
 
 set -e
 
-sync_ref_file=".template-sync-ref"
+directory=${DIRECTORY:-.}
+directory=${directory#./}
+directory=${directory%/}
+directory=${directory:-.}
+
+# A path in this repository's copy of the template.
+in_directory () {
+  if [ "${directory}" = . ]; then echo "$1"; else echo "${directory}/$1"; fi
+}
+
+sync_ref_file=$(in_directory .template-sync-ref)
 TEMPLATE_NAME=${TEMPLATE_REPOSITORY#*/}
+
+if [ "${directory}" = . ]; then
+  subject="${TEMPLATE_NAME}"
+  branch_prefix="template-sync"
+  merge_options=()
+else
+  subject="${directory} with ${TEMPLATE_NAME}"
+  branch_prefix="template-sync/${directory}"
+  merge_options=("-Xsubtree=${directory}")
+fi
 
 gh auth setup-git
 
@@ -12,18 +32,27 @@ git config user.email devops@contextual.io
 git config merge.ours.driver true
 
 # Load custom `merge=<name>` attribute drivers.
-for driver in bin/merge/*.ts; do
+for driver in "$(in_directory bin/merge)"/*.ts; do
   [ -e "${driver}" ] || continue
   git config "merge.$(basename "${driver}" .ts).driver" "node ${driver} %O %A %B"
 done
 
 # Load .templatesyncignore entries.
-if [ -f .templatesyncignore ]; then
-  # Normalize entries: strip whitespace and trailing slashes, anchor "./" to the repo root, and
-  # cover both files and dirs.
-  awk '{ gsub(/^[[:space:]]+|[[:space:]]+$/, ""); sub(/\/+$/, ""); sub(/^\.\//, "/") }
-       !/^#/ && NF { print $0 " merge=ours"; print $0 "/** merge=ours" }' \
-    .templatesyncignore >> "$(git rev-parse --git-dir)/info/attributes"
+if [ -f "$(in_directory .templatesyncignore)" ]; then
+  # Normalize entries: strip whitespace and trailing slashes, anchor "./" to the template's folder,
+  # and cover both files and dirs. In a folder, an entry without a slash still matches at any depth.
+  awk -v dir="${directory}" '
+    { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); sub(/\/+$/, ""); sub(/^\.\//, "/") }
+    !/^#/ && NF {
+      path = $0
+      if (dir != ".") {
+        if (path ~ /^\//) path = "/" dir path
+        else if (path ~ /\//) path = "/" dir "/" path
+        else path = "/" dir "/**/" path
+      }
+      print path " merge=ours"; print path "/** merge=ours"
+    }' \
+    "$(in_directory .templatesyncignore)" >> "$(git rev-parse --git-dir)/info/attributes"
 fi
 
 # Fetch the remote template and pin the commit this run will sync to.
@@ -65,13 +94,13 @@ conflict_report () {
     done < <(git show "${commit}:${path}" 2>/dev/null \
       | awk '/^<<<<<<< / { start = NR } /^>>>>>>> / && start { print start, NR; start = 0 }')
     list+=$'\n'"- [\`${path}\`](${url}/${path}): ${links:-no conflict markers (a binary file, or one side edited it and the other deleted it), so check which version this branch kept}"
-    case "${path}" in
+    case "${path##*/}" in
       yarn.lock | package-lock.json | pnpm-lock.yaml)
         list+=". Resolve \`package.json\` first, then regenerate this file by installing dependencies instead of editing the markers."
         continue
         ;;
     esac
-    change=$(git diff "${last_sync_commit}" "${template_head}" -- "${path}")
+    change=$(git diff "${last_sync_commit}" "${template_head}" -- "${path#"${directory}/"}")
     if [ -n "${change}" ] && [ "$(wc -l <<< "${change}")" -le 150 ] && [ "${#changes}" -lt 30000 ]; then
       changes+=$'\n\n'"<details><summary>What the template changed in <code>${path}</code></summary>"$'\n\n````diff\n'"${change}"$'\n````\n\n</details>'
     fi
@@ -82,21 +111,28 @@ conflict_report () {
   echo
   echo "To have an AI assistant resolve it, give it this prompt:"
   echo
+  local copy="the repository" template_file="<file>" in_copy=""
+  if [ "${directory}" != . ]; then
+    copy="${directory}"
+    template_file="<file's path relative to ${directory}>"
+    in_copy=" in ${directory}"
+  fi
+
   echo '````text'
   cat <<EOF
 Resolve the merge conflicts in a template sync.
 
-The repository https://github.com/${GITHUB_REPOSITORY} is built from the ${TEMPLATE_NAME} template. Its branch ${branch} merges ${TEMPLATE_NAME} @ ${template_head_short} into the repository, and the merge left conflict markers committed in these files:
+The repository https://github.com/${GITHUB_REPOSITORY} is built from the ${TEMPLATE_NAME} template. Its branch ${branch} merges ${TEMPLATE_NAME} @ ${template_head_short} into ${copy}, and the merge left conflict markers committed in these files:
 $(sed 's/^/- /' <<< "${files}")
 
 In each conflict, the part after <<<<<<< is this repository's version and the part between ======= and >>>>>>> is the template's new version.
 
 1. Clone the repository if needed, then check out the branch: git fetch origin ${branch} && git switch ${branch}
-2. Fetch the template (git fetch https://github.com/${TEMPLATE_REPOSITORY}.git ${TEMPLATE_BRANCH}), then for each conflicted file see what it changed: git diff ${last_sync_commit:0:7} ${template_head_short} -- <file>
+2. Fetch the template (git fetch https://github.com/${TEMPLATE_REPOSITORY}.git ${TEMPLATE_BRANCH}), then for each conflicted file see what it changed: git diff ${last_sync_commit:0:7} ${template_head_short} -- ${template_file}
 3. Resolve every conflict so the file keeps this repository's own changes and also applies the template's change. Only drop one side's change when the other side clearly replaces it, and tell me when you do.
 4. If package.json conflicts, keep this repository's own dependencies and scripts while taking the template's updates. Never hand-edit a lockfile: once package.json is resolved, regenerate it by installing dependencies.
-5. Read the new entries at the top of TEMPLATE_CHANGELOG.md, if it has them, and follow any instructions in them.
-6. Check that no conflict markers remain (git grep -nE '^(<<<<<<<|>>>>>>>) '), then install dependencies and run the build.
+5. Read the new entries at the top of $(in_directory TEMPLATE_CHANGELOG.md), if it has them, and follow any instructions in them.
+6. Check that no conflict markers remain (git grep -nE '^(<<<<<<<|>>>>>>>) '), then install dependencies and run the build${in_copy}.
 7. Commit the resolution to this branch and push it.
 8. Take the pull request out of draft so it can be reviewed: gh pr ready ${branch}. Don't merge it.
 9. Summarize how you resolved each conflict.
@@ -106,12 +142,12 @@ EOF
 }
 
 if git merge-base --is-ancestor "${template_head}" "${last_sync_commit}"; then
-  echo "Already up to date with ${TEMPLATE_NAME} @ ${template_head_short}."
+  echo "${subject}: already up to date with ${TEMPLATE_NAME} @ ${template_head_short}."
   exit 0
 fi
 
 # Named for the commit being synced from, so if a sync round is missed the branch name is reused.
-branch="template-sync/from-${last_sync_commit:0:7}" # Slice instead of --short to guarantee consistency
+branch="${branch_prefix}/from-${last_sync_commit:0:7}" # Slice instead of --short to guarantee consistency
 
 # An open sync PR is updated in place below, unless it already carries this template commit or
 # someone has pushed commits of their own to it.
@@ -139,17 +175,17 @@ git merge -s ours --allow-unrelated-histories --no-edit \
 pre_sync_tree=$(git rev-parse 'HEAD^{tree}')
 
 # Commit conflict markers when changes cannot be reconciled.
-if ! git merge --no-edit -m "chore(template): sync ${TEMPLATE_NAME} template" "${template_head}"; then
+if ! git merge "${merge_options[@]}" --no-edit -m "chore(template): sync ${subject} template" "${template_head}"; then
   conflicted_files=$(git diff --name-only --diff-filter=U)
   draft_on_conflict=--draft # Conflicted branches land as draft PRs to ensure they're handled.
   git add -A
-  git commit -m "chore(template): sync ${TEMPLATE_NAME} template (unresolved conflicts)"
+  git commit -m "chore(template): sync ${subject} template (unresolved conflicts)"
 fi
 
 # Changesets the merge brought in are the template's own and would block this repository's releases.
 template_changesets=$(comm -13 \
-  <(git ls-tree -r --name-only "${pre_sync_tree}" -- .changeset | sort) \
-  <(git ls-tree -r --name-only HEAD -- .changeset | grep '\.md$' | grep -v '/README\.md$' | sort))
+  <(git ls-tree -r --name-only "${pre_sync_tree}" -- "$(in_directory .changeset)" | sort) \
+  <(git ls-tree -r --name-only HEAD -- "$(in_directory .changeset)" | grep '\.md$' | grep -v '/README\.md$' | sort))
 if [ -n "${template_changesets}" ]; then
   echo "${template_changesets}" | xargs git rm -q --ignore-unmatch --
   git commit -m "chore(template): drop changesets that reference the template"
@@ -157,7 +193,12 @@ fi
 
 # Write a changeset file for this sync run so that a versioning PR gets cut, unless the sync changed nothing.
 if [ -d .changeset ] && [ "$(git rev-parse 'HEAD^{tree}')" != "${pre_sync_tree}" ]; then
-  package_name=$(node -p "require('./package.json').name")
+  package_name=$(node -p "require('./$(in_directory package.json)').name")
+  if [ "${directory}" = . ]; then
+    changeset_file=".changeset/template-sync-${template_head_short}.md"
+  else
+    changeset_file=".changeset/template-sync-${directory//\//-}-${template_head_short}.md"
+  fi
   {
     echo "---"
     echo "\"${package_name}\": patch"
@@ -168,8 +209,8 @@ if [ -d .changeset ] && [ "$(git rev-parse 'HEAD^{tree}')" != "${pre_sync_tree}"
     else
       echo "chore(template): sync ${TEMPLATE_NAME} $(template_version "${last_sync_commit}") → $(template_version "${template_head}")"
     fi
-  } > ".changeset/template-sync-${template_head_short}.md"
-  git add ".changeset/template-sync-${template_head_short}.md"
+  } > "${changeset_file}"
+  git add "${changeset_file}"
   git commit -m "chore(template): add a changeset for the synced changes"
 fi
 
@@ -179,12 +220,16 @@ git add "${sync_ref_file}"
 git commit -m "chore(template): record ${TEMPLATE_NAME} @ ${template_head_short} as synced"
 
 # Squash the sync into one commit on the default branch, so the template's history stays out of this repository.
-title="chore(template): sync ${TEMPLATE_NAME} @ ${template_head_short}"
+title="chore(template): sync ${subject} @ ${template_head_short}"
 git reset --soft "${default_head}"
 git commit -m "${title}"
 
 # Open a PR with the sync results.
-body="Syncs \`${TEMPLATE_NAME}\` @ \`${template_head_short}\`."
+if [ "${directory}" = . ]; then
+  body="Syncs \`${TEMPLATE_NAME}\` @ \`${template_head_short}\`."
+else
+  body="Syncs \`${directory}\` with \`${TEMPLATE_NAME}\` @ \`${template_head_short}\`."
+fi
 if [ -n "${conflicted_files}" ]; then
   body+=$'\n\n'"$(conflict_report "$(git rev-parse HEAD)" "${conflicted_files}")"
 fi

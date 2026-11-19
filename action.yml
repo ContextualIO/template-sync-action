@@ -9,8 +9,11 @@ inputs:
   template-branch:
     description: The template branch to sync from.
     default: main
+  directory:
+    description: The folder holding this repository's copy of the template, relative to the repository root.
+    default: .
   organization:
-    description: The Contextual organization whose GitHub connection covers this repository. The sync then uses a token from the organization's GitHub App instead of `token`.
+    description: The Contextual organization whose GitHub connection covers this repository. The sync then uses a token from the organization's GitHub App instead of `token`. Defaults to `CONTEXTUAL_ORGANIZATION` in a `contextual-deploy.env` committed in `directory`.
     default: ""
   token:
     description: The token that checks out the repository, pushes the sync branch and opens the pull request, when no organization is given.
@@ -20,10 +23,12 @@ runs:
   using: composite
   steps:
     - id: exchange
-      if: inputs.organization != ''
       shell: bash
       env:
         ORGANIZATION: ${{ inputs.organization }}
+        DIRECTORY: ${{ inputs.directory }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        READ_TOKEN: ${{ inputs.token }}
       run: '"$GITHUB_ACTION_PATH/exchange.sh"'
     - uses: actions/checkout@v7
       with:
@@ -39,4 +44,5 @@ runs:
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         TEMPLATE_REPOSITORY: ${{ inputs.template-repository }}
         TEMPLATE_BRANCH: ${{ inputs.template-branch }}
+        DIRECTORY: ${{ inputs.directory }}
       run: '"$GITHUB_ACTION_PATH/template-sync.sh"'
